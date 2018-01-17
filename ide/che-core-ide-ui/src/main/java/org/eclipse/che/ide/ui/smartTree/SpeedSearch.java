@@ -22,6 +22,8 @@ import java.util.List;
 import java.util.Optional;
 import java.util.stream.Collectors;
 
+import org.eclipse.che.api.promises.client.Operation;
+import org.eclipse.che.api.promises.client.OperationException;
 import org.eclipse.che.ide.DelayedTask;
 import org.eclipse.che.ide.FontAwesome;
 import org.eclipse.che.ide.ui.smartTree.converter.NodeConverter;
@@ -43,25 +45,24 @@ import static org.eclipse.che.ide.api.theme.Style.theme;
 public class SpeedSearch {
 
   private static final String ID = "speedSearch";
+  private static final int SEARCH_DELAY_MS = 100;
 
   private final Tree tree;
   private final NodeConverter<Node, String> nodeConverter;
-  private final SpeedSearchRender speedSearchRender;
+  private final SpeedSearchRender searchRender;
   private final boolean filterElements;
-  private final int searchDelay;
 
   private DelayedTask searchTask;
   private StringBuilder searchRequest;
   private SearchPopUp searchPopUp;
-
   private List<Node> savedNodes;
-  private List<Node> filter;
+  private List<Node> filteredNodes;
 
   /**
    * Filters nodes in the given tree by matching the pattern generated from entered search request.
    *
-   * @param tree The tree to filter
-   * @param matchingStyle Style of the matchings
+   * @param tree the tree to filter
+   * @param matchingStyle style of the matching
    * @param nodeConverter instance of the {@link NodeConverter}
    * @param filterElements a flag that indicates if needed to remove nodes from the tree that
    *     doesn't match the search pattern
@@ -73,8 +74,8 @@ public class SpeedSearch {
       boolean filterElements) {
     this.tree = tree;
     this.filterElements = filterElements;
-    this.speedSearchRender = new SpeedSearchRender(tree.getTreeStyles(), matchingStyle);
-    this.tree.setPresentationRenderer(speedSearchRender);
+    this.searchRender = new SpeedSearchRender(tree.getTreeStyles(), matchingStyle);
+    this.tree.setPresentationRenderer(searchRender);
     this.nodeConverter = nodeConverter != null ? nodeConverter : new NodeNameConverter();
 
     this.tree.addKeyPressHandler(
@@ -109,9 +110,12 @@ public class SpeedSearch {
 
     this.tree.addExpandHandler(
         event -> {
+          if (filteredNodes == null) {
+            return;
+          }
           Node expandedNode = event.getNode();
           List<Node> filteredChildren =
-              filter
+              filteredNodes
                   .stream()
                   .filter(node -> node.getParent() != null && node.getParent().equals(expandedNode))
                   .collect(Collectors.toList());
@@ -121,8 +125,6 @@ public class SpeedSearch {
             tree.getNodeStorage().replaceChildren(expandedNode, filteredChildren);
           }
         });
-
-    this.searchDelay = 100; // 100ms
     this.searchRequest = new StringBuilder();
     initSearchPopUp();
   }
@@ -141,7 +143,7 @@ public class SpeedSearch {
     style.setLeft(20, PX);
   }
 
-  private void addSearchPopUpToTree() {
+  private void addSearchPopUpToTreeIfNotDisplayed() {
     if (Document.get().getElementById(ID) == null) {
       searchPopUp.setVisible(true);
       tree.getParent().getElement().appendChild(searchPopUp.getElement());
@@ -166,76 +168,73 @@ public class SpeedSearch {
             }
           };
     }
-    searchTask.delay(searchDelay);
+    searchTask.delay(SEARCH_DELAY_MS);
   }
 
   protected void reset() {
     removeSearchPopUpFromTreeIfVisible();
     searchRequest.setLength(0);
     savedNodes = null;
-    speedSearchRender.setRequestPattern("");
-    speedSearchRender.setSearchRequest("");
+    searchRender.setRequestPattern("");
+    searchRender.setSearchRequest("");
   }
 
   private void doSearch() {
     if (Strings.isNullOrEmpty(searchRequest.toString())) {
       removeSearchPopUpFromTreeIfVisible();
     } else {
-      addSearchPopUpToTree();
+      addSearchPopUpToTreeIfNotDisplayed();
       searchPopUp.setSearchRequest(searchRequest.toString());
     }
-
-    speedSearchRender.setSearchRequest(searchRequest.toString());
-    speedSearchRender.setRequestPattern(getSearchPattern());
-
+    searchRender.setSearchRequest(searchRequest.toString());
+    searchRender.setRequestPattern(getSearchPattern());
     tree.getSelectionModel().deselectAll();
-
     savedNodes = savedNodes == null ? getVisibleNodes() : savedNodes;
-
-    filter =
+    List<Node> filteredChildNodes =
         savedNodes.stream().filter(matchesToSearchRequest()::apply).collect(Collectors.toList());
+    filteredNodes =
+        savedNodes
+            .stream()
+            .filter(
+                savedNode ->
+                    matchesToSearchRequest().apply(savedNode)
+                        || filteredChildNodes
+                            .stream()
+                            .anyMatch(
+                                filteredNode -> existsInParentsOfNode(filteredNode, savedNode)))
+            .collect(Collectors.toList());
     NodeStorage nodeStorage = tree.getNodeStorage();
 
     if (filterElements) {
       for (Node savedNode : savedNodes) {
-        if (filter.stream().noneMatch(node -> node.equals(savedNode))) {
-          if ((filter
-              .stream()
-              .noneMatch(node -> node.getParent() != null && node.getParent().equals(savedNode)))) {
+        if (!filteredNodes.contains(savedNode)) {
+          if (getVisibleNodes().contains(savedNode)) {
             nodeStorage.remove(savedNode);
           }
-        } else if (getVisibleNodes().stream().noneMatch(node -> node.equals(savedNode))) {
+        } else if (!getVisibleNodes().contains(savedNode)) {
           Node parent = savedNode.getParent();
           if (parent == null) {
             nodeStorage.add(savedNode);
-          } else {
-            List<Node> children =
-                filter
-                    .stream()
-                    .filter(node -> node.getParent() != null && node.getParent().equals(parent))
-                    .collect(Collectors.toList());
-            if (getVisibleNodes().stream().noneMatch(node -> node.equals(parent))) {
-              parent.setChildren(children);
-              nodeStorage.add(parent);
-            }
-            parent.setChildren(children);
-            nodeStorage.replaceChildren(parent, children);
-            break;
+            nodeStorage.replaceChildren(savedNode, getFilteredChildren(savedNode));
+          } else if (getVisibleNodes().contains(parent)) {
+            List<Node> filteredChildren = getFilteredChildren(parent);
+            nodeStorage.replaceChildren(parent, filteredChildren);
           }
         }
       }
+      tree.expandAll();
     }
-    getVisibleNodes().forEach(node -> tree.refresh(node));
+    getVisibleNodes().forEach(tree::refresh);
 
     Optional<Node> startsOptional =
-        filter
+        filteredNodes
             .stream()
             .filter(
                 node ->
                     node.getName().toLowerCase().startsWith(searchRequest.toString().toLowerCase()))
             .findFirst();
     Optional<Node> containsOptional =
-        filter
+        filteredNodes
             .stream()
             .filter(
                 node ->
@@ -247,8 +246,28 @@ public class SpeedSearch {
     } else if (containsOptional.isPresent()) {
       tree.getSelectionModel().select(containsOptional.get(), true);
     } else {
-      filter.stream().findFirst().ifPresent(node -> tree.getSelectionModel().select(node, true));
+      filteredNodes
+          .stream()
+          .findFirst()
+          .ifPresent(node -> tree.getSelectionModel().select(node, true));
     }
+  }
+
+  private List<Node> getFilteredChildren(Node parent) {
+    return filteredNodes
+        .stream()
+        .filter(node -> node.getParent() != null && node.getParent().equals(parent))
+        .collect(Collectors.toList());
+  }
+
+  private boolean existsInParentsOfNode(Node node, Node parent) {
+    while (node != null) {
+      node = node.getParent();
+      if (parent.equals(node)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private List<Node> getVisibleNodes() {
