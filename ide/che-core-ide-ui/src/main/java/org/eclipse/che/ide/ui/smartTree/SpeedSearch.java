@@ -15,11 +15,9 @@ import com.google.common.base.Strings;
 import com.google.gwt.dom.client.Style;
 import com.google.gwt.dom.client.Document;
 import com.google.gwt.dom.client.Element;
-import com.google.gwt.dom.client.SpanElement;
 import com.google.gwt.user.client.ui.HorizontalPanel;
 import com.google.gwt.user.client.ui.Label;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.stream.Collectors;
@@ -29,8 +27,6 @@ import org.eclipse.che.ide.FontAwesome;
 import org.eclipse.che.ide.ui.smartTree.converter.NodeConverter;
 import org.eclipse.che.ide.ui.smartTree.converter.impl.NodeNameConverter;
 import org.eclipse.che.ide.ui.smartTree.data.Node;
-import org.eclipse.che.ide.ui.smartTree.presentation.DefaultPresentationRenderer;
-import org.eclipse.che.ide.util.dom.Elements;
 
 import static com.google.gwt.dom.client.Style.BorderStyle.SOLID;
 import static com.google.gwt.dom.client.Style.Position.FIXED;
@@ -51,6 +47,8 @@ public class SpeedSearch {
   private StringBuilder searchRequest;
   private SearchPopUp searchPopUp;
   private static final String ID = "speedSearch";
+
+  private final SpeedSearchRender speedSearchRender;
 
   private int searchDelay;
   private List<Node> savedNodes;
@@ -89,7 +87,8 @@ public class SpeedSearch {
     this.tree = tree;
     this.style = style;
     this.filterElements = filterElements;
-    this.tree.setPresentationRenderer(new SearchRender(tree.getTreeStyles()));
+    speedSearchRender = new SpeedSearchRender(tree.getTreeStyles(), style);
+    this.tree.setPresentationRenderer(speedSearchRender);
     this.nodeConverter = nodeConverter != null ? nodeConverter : new NodeNameConverter();
 
     this.tree.addKeyPressHandler(
@@ -103,20 +102,20 @@ public class SpeedSearch {
         event -> {
           switch (event.getNativeKeyCode()) {
             case KEY_ENTER:
-              removeSearchPopUpFromTree();
+              removeSearchPopUpFromTreeIfVisible();
               break;
             case KEY_BACKSPACE:
               if (!Strings.isNullOrEmpty(searchRequest.toString())) {
                 event.preventDefault();
                 searchRequest.setLength(searchRequest.length() - 1);
-                doSearch();
+                update();
               }
               break;
             case KEY_ESCAPE:
               if (searchRequest.length() != 0) {
                 event.stopPropagation();
                 searchRequest.setLength(0);
-                doSearch();
+                update();
               }
               break;
           }
@@ -137,7 +136,7 @@ public class SpeedSearch {
     style.setBorderWidth(1, PX);
     style.setPadding(2, PX);
     style.setPosition(FIXED);
-    style.setBottom(5, PX);
+    style.setBottom(33, PX);
     style.setLeft(20, PX);
   }
 
@@ -148,9 +147,12 @@ public class SpeedSearch {
     }
   }
 
-  private void removeSearchPopUpFromTree() {
+  private void removeSearchPopUpFromTreeIfVisible() {
     searchRequest.setLength(0);
-    Document.get().getElementById(ID).removeFromParent();
+    Element popUp = Document.get().getElementById(ID);
+    if (popUp != null) {
+      popUp.removeFromParent();
+    }
   }
 
   protected void update() {
@@ -167,16 +169,21 @@ public class SpeedSearch {
   }
 
   protected void reset() {
+    removeSearchPopUpFromTreeIfVisible();
+    searchRequest.setLength(0);
     savedNodes = null;
   }
 
   private void doSearch() {
     if (Strings.isNullOrEmpty(searchRequest.toString())) {
-      removeSearchPopUpFromTree();
+      removeSearchPopUpFromTreeIfVisible();
     } else {
       addSearchPopUpToTree();
       searchPopUp.setSearchRequest(searchRequest.toString());
     }
+
+    speedSearchRender.setSearchRequest(searchRequest.toString());
+    speedSearchRender.setRequestPattern(getSearchPattern());
 
     tree.getSelectionModel().deselectAll();
 
@@ -198,10 +205,18 @@ public class SpeedSearch {
           if (savedNode.getParent() == null) {
             nodeStorage.add(savedNode);
           } else {
-            if (getVisibleNodes().isEmpty()) {
+            if (getVisibleNodes().stream().noneMatch(node -> node.equals(savedNode.getParent()))) {
               nodeStorage.add(savedNode.getParent());
             }
-            nodeStorage.insert(savedNode.getParent(), getIndex(savedNode), savedNode);
+            List<Node> children =
+                filter
+                    .stream()
+                    .filter(
+                        node ->
+                            node.getParent() != null
+                                && node.getParent().equals(savedNode.getParent()))
+                    .collect(Collectors.toList());
+            nodeStorage.replaceChildren(savedNode.getParent(), children);
           }
         }
       }
@@ -232,19 +247,6 @@ public class SpeedSearch {
     }
   }
 
-  private int getIndex(Node node) {
-    return savedNodes
-        .stream()
-        .filter(
-            savedNode ->
-                (getVisibleNodes().stream().anyMatch(savedNode::equals)
-                        && (savedNode.getParent() != null
-                            && savedNode.getParent().equals(node.getParent())))
-                    || savedNode.equals(node))
-        .collect(Collectors.toList())
-        .indexOf(node);
-  }
-
   private List<Node> getVisibleNodes() {
     List<Node> rootNodes = tree.getRootNodes();
     return tree.getAllChildNodes(rootNodes, true);
@@ -263,94 +265,5 @@ public class SpeedSearch {
       pattern.append(searchRequest.charAt(i)).append(".*");
     }
     return pattern.toString().toLowerCase();
-  }
-
-  class SearchRender extends DefaultPresentationRenderer<Node> {
-    SearchRender(TreeStyles treeStyles) {
-      super(treeStyles);
-    }
-
-    @Override
-    public Element render(
-        final Node node, final String domID, final Tree.Joint joint, final int depth) {
-      // Initialize HTML elements.
-      final Element rootContainer = super.render(node, domID, joint, depth);
-      final Element nodeContainer = rootContainer.getFirstChildElement();
-
-      if (searchRequest.toString().isEmpty()) {
-        return rootContainer;
-      }
-
-      Element item = nodeContainer.getElementsByTagName("span").getItem(0);
-      String innerText = item.getInnerText();
-
-      if (innerText.isEmpty()) {
-        item = nodeContainer.getElementsByTagName("div").getItem(0).getFirstChildElement();
-        innerText = item.getInnerText();
-      }
-
-      List<String> groups = getMatchings(innerText);
-      if (groups.isEmpty()) {
-        return rootContainer;
-      }
-
-      if (!innerText.toLowerCase().matches(getSearchPattern())) {
-        return rootContainer;
-      }
-
-      item.setInnerText("");
-
-      for (int i = 0; i < groups.size(); i++) {
-        String groupValue = groups.get(i);
-        SpanElement spanElement1 = (SpanElement) Elements.createSpanElement();
-        SpanElement spanElement2 = (SpanElement) Elements.createSpanElement(style);
-        spanElement1.setInnerText(
-            innerText.substring(0, innerText.toLowerCase().indexOf(groupValue)));
-        int index = innerText.toLowerCase().indexOf(groupValue);
-        spanElement2.setInnerText(innerText.substring(index, index + groupValue.length()));
-        item.appendChild(spanElement1);
-        item.appendChild(spanElement2);
-
-        if (i == groups.size() - 1) {
-          SpanElement spanElement3 = (SpanElement) Elements.createSpanElement();
-          spanElement3.setInnerText(
-              innerText.substring(
-                  innerText.toLowerCase().indexOf(groupValue) + groupValue.length()));
-          item.appendChild(spanElement3);
-        } else {
-          innerText =
-              innerText.substring(
-                  innerText.toLowerCase().indexOf(groupValue) + groupValue.length());
-        }
-      }
-
-      return rootContainer;
-    }
-
-    private List<String> getMatchings(String input) {
-      String group = "";
-      List<String> groups = new ArrayList<>();
-      for (int i = 0; i < searchRequest.length(); i++) {
-
-        String value = String.valueOf(searchRequest.charAt(i)).toLowerCase();
-
-        if (input.toLowerCase().contains(group + value)) {
-          group += value;
-          if (i == searchRequest.length() - 1) {
-            groups.add(group);
-          }
-        } else if (!group.isEmpty()) {
-          groups.add(group);
-          if (i == searchRequest.length() - 1) {
-            groups.add(value);
-          } else if (input.toLowerCase().contains(value)) {
-            group = value;
-          } else {
-            group = "";
-          }
-        }
-      }
-      return groups;
-    }
   }
 }
