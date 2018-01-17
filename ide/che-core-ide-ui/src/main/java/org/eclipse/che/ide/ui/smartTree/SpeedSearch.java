@@ -36,58 +36,44 @@ import static com.google.gwt.event.dom.client.KeyCodes.KEY_ENTER;
 import static com.google.gwt.event.dom.client.KeyCodes.KEY_ESCAPE;
 import static org.eclipse.che.ide.api.theme.Style.theme;
 
-/** @author Vlad Zhukovskiy */
+/**
+ * @author Vlad Zhukovskiy
+ * @author Igor Vinokur
+ */
 public class SpeedSearch {
 
-  private Tree tree;
-  private final String style;
+  private static final String ID = "speedSearch";
+
+  private final Tree tree;
+  private final NodeConverter<Node, String> nodeConverter;
+  private final SpeedSearchRender speedSearchRender;
   private final boolean filterElements;
-  private NodeConverter<Node, String> nodeConverter;
+  private final int searchDelay;
+
   private DelayedTask searchTask;
   private StringBuilder searchRequest;
   private SearchPopUp searchPopUp;
-  private static final String ID = "speedSearch";
 
-  private final SpeedSearchRender speedSearchRender;
-
-  private int searchDelay;
   private List<Node> savedNodes;
+  private List<Node> filter;
 
-  private class SearchPopUp extends HorizontalPanel {
-    private Label searchText;
-
-    private SearchPopUp() {
-      getElement().setId(ID);
-      setVisible(false); // by default
-
-      Label icon = new Label();
-      icon.getElement().setInnerHTML(FontAwesome.SEARCH);
-      Style iconStyle = icon.getElement().getStyle();
-      iconStyle.setFontSize(16, PX);
-      iconStyle.setMarginLeft(5, PX);
-      iconStyle.setMarginRight(5, PX);
-
-      searchText = new Label();
-      Style searchTextStyle = searchText.getElement().getStyle();
-      searchTextStyle.setFontSize(12, PX);
-      searchTextStyle.setMarginRight(5, PX);
-      searchTextStyle.setMarginTop(4, PX);
-
-      add(icon);
-      add(searchText);
-    }
-
-    private void setSearchRequest(String request) {
-      searchText.setText(request);
-    }
-  }
-
+  /**
+   * Filters nodes in the given tree by matching the pattern generated from entered search request.
+   *
+   * @param tree The tree to filter
+   * @param matchingStyle Style of the matchings
+   * @param nodeConverter instance of the {@link NodeConverter}
+   * @param filterElements a flag that indicates if needed to remove nodes from the tree that
+   *     doesn't match the search pattern
+   */
   SpeedSearch(
-      Tree tree, String style, NodeConverter<Node, String> nodeConverter, boolean filterElements) {
+      Tree tree,
+      String matchingStyle,
+      NodeConverter<Node, String> nodeConverter,
+      boolean filterElements) {
     this.tree = tree;
-    this.style = style;
     this.filterElements = filterElements;
-    speedSearchRender = new SpeedSearchRender(tree.getTreeStyles(), style);
+    this.speedSearchRender = new SpeedSearchRender(tree.getTreeStyles(), matchingStyle);
     this.tree.setPresentationRenderer(speedSearchRender);
     this.nodeConverter = nodeConverter != null ? nodeConverter : new NodeNameConverter();
 
@@ -118,6 +104,21 @@ public class SpeedSearch {
                 update();
               }
               break;
+          }
+        });
+
+    this.tree.addExpandHandler(
+        event -> {
+          Node expandedNode = event.getNode();
+          List<Node> filteredChildren =
+              filter
+                  .stream()
+                  .filter(node -> node.getParent() != null && node.getParent().equals(expandedNode))
+                  .collect(Collectors.toList());
+          if (searchRequest.length() != 0
+              && tree.getNodeStorage().getChildren(expandedNode).size()
+                  != filteredChildren.size()) {
+            tree.getNodeStorage().replaceChildren(expandedNode, filteredChildren);
           }
         });
 
@@ -172,6 +173,8 @@ public class SpeedSearch {
     removeSearchPopUpFromTreeIfVisible();
     searchRequest.setLength(0);
     savedNodes = null;
+    speedSearchRender.setRequestPattern("");
+    speedSearchRender.setSearchRequest("");
   }
 
   private void doSearch() {
@@ -189,7 +192,7 @@ public class SpeedSearch {
 
     savedNodes = savedNodes == null ? getVisibleNodes() : savedNodes;
 
-    List<Node> filter =
+    filter =
         savedNodes.stream().filter(matchesToSearchRequest()::apply).collect(Collectors.toList());
     NodeStorage nodeStorage = tree.getNodeStorage();
 
@@ -202,21 +205,22 @@ public class SpeedSearch {
             nodeStorage.remove(savedNode);
           }
         } else if (getVisibleNodes().stream().noneMatch(node -> node.equals(savedNode))) {
-          if (savedNode.getParent() == null) {
+          Node parent = savedNode.getParent();
+          if (parent == null) {
             nodeStorage.add(savedNode);
           } else {
-            if (getVisibleNodes().stream().noneMatch(node -> node.equals(savedNode.getParent()))) {
-              nodeStorage.add(savedNode.getParent());
-            }
             List<Node> children =
                 filter
                     .stream()
-                    .filter(
-                        node ->
-                            node.getParent() != null
-                                && node.getParent().equals(savedNode.getParent()))
+                    .filter(node -> node.getParent() != null && node.getParent().equals(parent))
                     .collect(Collectors.toList());
-            nodeStorage.replaceChildren(savedNode.getParent(), children);
+            if (getVisibleNodes().stream().noneMatch(node -> node.equals(parent))) {
+              parent.setChildren(children);
+              nodeStorage.add(parent);
+            }
+            parent.setChildren(children);
+            nodeStorage.replaceChildren(parent, children);
+            break;
           }
         }
       }
@@ -265,5 +269,34 @@ public class SpeedSearch {
       pattern.append(searchRequest.charAt(i)).append(".*");
     }
     return pattern.toString().toLowerCase();
+  }
+
+  private class SearchPopUp extends HorizontalPanel {
+    private Label searchText;
+
+    private SearchPopUp() {
+      getElement().setId(ID);
+      setVisible(false); // by default
+
+      Label icon = new Label();
+      icon.getElement().setInnerHTML(FontAwesome.SEARCH);
+      Style iconStyle = icon.getElement().getStyle();
+      iconStyle.setFontSize(16, PX);
+      iconStyle.setMarginLeft(5, PX);
+      iconStyle.setMarginRight(5, PX);
+
+      searchText = new Label();
+      Style searchTextStyle = searchText.getElement().getStyle();
+      searchTextStyle.setFontSize(12, PX);
+      searchTextStyle.setMarginRight(5, PX);
+      searchTextStyle.setMarginTop(4, PX);
+
+      add(icon);
+      add(searchText);
+    }
+
+    private void setSearchRequest(String request) {
+      searchText.setText(request);
+    }
   }
 }

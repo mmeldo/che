@@ -499,6 +499,7 @@ public class NodeStorage implements StoreHandlers.HasStoreHandlers {
         if (wrapper.getParent() == parent) {
           fireEvent(new StoreRemoveEvent(0, wrapper.getNode(), parent.getNode(), children));
         }
+        idToNodeMap.remove(getKeyProvider().getKey(wrapper.getNode()));
       }
     }
   }
