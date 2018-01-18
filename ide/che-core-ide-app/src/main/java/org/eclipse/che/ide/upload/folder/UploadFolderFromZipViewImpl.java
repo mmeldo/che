@@ -87,7 +87,7 @@ public class UploadFolderFromZipViewImpl extends Window implements UploadFolderF
                 delegate.onUploadClicked();
               }
             });
-    btnUpload.addStyleName(resources.Css().buttonLoader());
+    btnUpload.addStyleName(resources.buttonLoaderCss().buttonLoader());
     addButtonToFooter(btnUpload);
     this.agentURLModifier = agentURLModifier;
   }
