@@ -111,7 +111,7 @@ final class FileStructureImpl extends Window implements FileStructure {
 
     treeContainer.add(tree);
 
-    tree.applySpeedSearch(true);
+    tree.enableSpeedSearch(true);
   }
 
   /** {@inheritDoc} */
@@ -142,7 +142,7 @@ final class FileStructureImpl extends Window implements FileStructure {
       tree.getSelectionModel().select(tree.getRootNodes().get(0), false);
     }
     tree.expandAll();
-    tree.resetSpeedSearch();
+    tree.resetSpeedSearchState();
   }
 
   /** {@inheritDoc} */

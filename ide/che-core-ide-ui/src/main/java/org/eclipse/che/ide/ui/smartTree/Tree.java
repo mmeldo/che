@@ -36,34 +36,22 @@ import java.util.List;
 import java.util.Map;
 import org.eclipse.che.commons.annotation.Nullable;
 import org.eclipse.che.ide.DelayedTask;
+import org.eclipse.che.ide.ui.smartTree.converter.NodeConverter;
 import org.eclipse.che.ide.ui.smartTree.data.HasAction;
 import org.eclipse.che.ide.ui.smartTree.data.MutableNode;
 import org.eclipse.che.ide.ui.smartTree.data.Node;
-import org.eclipse.che.ide.ui.smartTree.event.BeforeCollapseNodeEvent;
+import org.eclipse.che.ide.ui.smartTree.event.*;
 import org.eclipse.che.ide.ui.smartTree.event.BeforeCollapseNodeEvent.HasBeforeCollapseItemHandlers;
-import org.eclipse.che.ide.ui.smartTree.event.BeforeExpandNodeEvent;
 import org.eclipse.che.ide.ui.smartTree.event.BeforeExpandNodeEvent.HasBeforeExpandNodeHandlers;
-import org.eclipse.che.ide.ui.smartTree.event.BlurEvent;
 import org.eclipse.che.ide.ui.smartTree.event.BlurEvent.HasBlurHandlers;
-import org.eclipse.che.ide.ui.smartTree.event.CancellableEvent;
-import org.eclipse.che.ide.ui.smartTree.event.CollapseNodeEvent;
 import org.eclipse.che.ide.ui.smartTree.event.CollapseNodeEvent.HasCollapseItemHandlers;
-import org.eclipse.che.ide.ui.smartTree.event.ExpandNodeEvent;
 import org.eclipse.che.ide.ui.smartTree.event.ExpandNodeEvent.HasExpandItemHandlers;
-import org.eclipse.che.ide.ui.smartTree.event.FocusEvent;
-import org.eclipse.che.ide.ui.smartTree.event.NodeAddedEvent;
 import org.eclipse.che.ide.ui.smartTree.event.NodeAddedEvent.HasNodeAddedEventHandlers;
-import org.eclipse.che.ide.ui.smartTree.event.StoreAddEvent;
 import org.eclipse.che.ide.ui.smartTree.event.StoreAddEvent.StoreAddHandler;
-import org.eclipse.che.ide.ui.smartTree.event.StoreClearEvent;
 import org.eclipse.che.ide.ui.smartTree.event.StoreClearEvent.StoreClearHandler;
-import org.eclipse.che.ide.ui.smartTree.event.StoreDataChangeEvent;
 import org.eclipse.che.ide.ui.smartTree.event.StoreDataChangeEvent.StoreDataChangeHandler;
-import org.eclipse.che.ide.ui.smartTree.event.StoreRemoveEvent;
 import org.eclipse.che.ide.ui.smartTree.event.StoreRemoveEvent.StoreRemoveHandler;
-import org.eclipse.che.ide.ui.smartTree.event.StoreSortEvent;
 import org.eclipse.che.ide.ui.smartTree.event.StoreSortEvent.StoreSortHandler;
-import org.eclipse.che.ide.ui.smartTree.event.StoreUpdateEvent;
 import org.eclipse.che.ide.ui.smartTree.event.StoreUpdateEvent.StoreUpdateHandler;
 import org.eclipse.che.ide.ui.smartTree.event.internal.NativeTreeEvent;
 import org.eclipse.che.ide.ui.smartTree.handler.GroupingHandlerRegistration;
@@ -168,6 +156,7 @@ import org.eclipse.che.ide.ui.status.StatusText;
 public class Tree extends FocusWidget
     implements HasBeforeExpandNodeHandlers,
         HasExpandItemHandlers,
+        RedrawNodeEvent.HasRedrawItemHandlers,
         HasBeforeCollapseItemHandlers,
         HasCollapseItemHandlers,
         ComponentWithEmptyStatus,
@@ -332,6 +321,11 @@ public class Tree extends FocusWidget
   @Override
   public HandlerRegistration addExpandHandler(ExpandNodeEvent.ExpandNodeHandler handler) {
     return addHandler(handler, ExpandNodeEvent.getType());
+  }
+
+  @Override
+  public HandlerRegistration addRedrawHandler(RedrawNodeEvent.RedrawNodeHandler handler) {
+    return addHandler(handler, RedrawNodeEvent.getType());
   }
 
   /** {@inheritDoc} */
@@ -993,12 +987,16 @@ public class Tree extends FocusWidget
     return goInto;
   }
 
-  public void applySpeedSearch(boolean filterElements) {
+  /** Enable searching @see {@link SpeedSearch#SpeedSearch(Tree, String, NodeConverter, boolean)} */
+  public void enableSpeedSearch(boolean filterElements) {
     speedSearch = new SpeedSearch(this, treeStyles.styles().searchMatch(), null, filterElements);
   }
 
-  public void resetSpeedSearch() {
-    speedSearch.reset();
+  /**
+   * Resets ini
+   */
+  public void resetSpeedSearchState() {
+    speedSearch.resetState();
   }
 
   /** {@inheritDoc} */
@@ -1155,6 +1153,7 @@ public class Tree extends FocusWidget
         setExpanded(parent, true, nodeDescriptor.isExpandDeep());
       }
     }
+    fireEvent(new RedrawNodeEvent(parent));
   }
 
   private void onExpand(Node node, NodeDescriptor nodeDescriptor, boolean deep) {

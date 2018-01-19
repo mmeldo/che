@@ -11,24 +11,22 @@
 package org.eclipse.che.ide.ui.smartTree;
 
 import com.google.common.base.Predicate;
-import com.google.common.base.Strings;
 import com.google.gwt.dom.client.Style;
 import com.google.gwt.dom.client.Document;
 import com.google.gwt.dom.client.Element;
+import com.google.gwt.event.shared.HandlerRegistration;
 import com.google.gwt.user.client.ui.HorizontalPanel;
 import com.google.gwt.user.client.ui.Label;
 
 import java.util.List;
 import java.util.Optional;
-import java.util.stream.Collectors;
 
-import org.eclipse.che.api.promises.client.Operation;
-import org.eclipse.che.api.promises.client.OperationException;
 import org.eclipse.che.ide.DelayedTask;
 import org.eclipse.che.ide.FontAwesome;
 import org.eclipse.che.ide.ui.smartTree.converter.NodeConverter;
 import org.eclipse.che.ide.ui.smartTree.converter.impl.NodeNameConverter;
 import org.eclipse.che.ide.ui.smartTree.data.Node;
+import org.eclipse.che.ide.ui.smartTree.event.ExpandNodeEvent.ExpandNodeHandler;
 
 import static com.google.gwt.dom.client.Style.BorderStyle.SOLID;
 import static com.google.gwt.dom.client.Style.Position.FIXED;
@@ -36,6 +34,7 @@ import static com.google.gwt.dom.client.Style.Unit.PX;
 import static com.google.gwt.event.dom.client.KeyCodes.KEY_BACKSPACE;
 import static com.google.gwt.event.dom.client.KeyCodes.KEY_ENTER;
 import static com.google.gwt.event.dom.client.KeyCodes.KEY_ESCAPE;
+import static java.util.stream.Collectors.toList;
 import static org.eclipse.che.ide.api.theme.Style.theme;
 
 /**
@@ -48,10 +47,13 @@ public class SpeedSearch {
   private static final int SEARCH_DELAY_MS = 100;
 
   private final Tree tree;
+  private final NodeStorage nodeStorage;
   private final NodeConverter<Node, String> nodeConverter;
   private final SpeedSearchRender searchRender;
-  private final boolean filterElements;
+  private final boolean filterNodes;
+  private final ExpandNodeHandler expandNodeHandler;
 
+  private HandlerRegistration expandHandlerRegistration;
   private DelayedTask searchTask;
   private StringBuilder searchRequest;
   private SearchPopUp searchPopUp;
@@ -59,43 +61,44 @@ public class SpeedSearch {
   private List<Node> filteredNodes;
 
   /**
-   * Filters nodes in the given tree by matching the pattern generated from entered search request.
+   * Searches and highlights matchings in the given tree by pattern generated from entered search
+   * request.
    *
-   * @param tree the tree to filter
+   * @param tree the tree to search in
    * @param matchingStyle style of the matching
    * @param nodeConverter instance of the {@link NodeConverter}
-   * @param filterElements a flag that indicates if needed to remove nodes from the tree that
-   *     doesn't match the search pattern
+   * @param filterNodes a flag that indicates if needed to remove nodes from the tree that doesn't
+   *     match the search pattern
    */
   SpeedSearch(
       Tree tree,
       String matchingStyle,
       NodeConverter<Node, String> nodeConverter,
-      boolean filterElements) {
+      boolean filterNodes) {
     this.tree = tree;
-    this.filterElements = filterElements;
+    this.filterNodes = filterNodes;
+    this.searchRequest = new StringBuilder();
     this.searchRender = new SpeedSearchRender(tree.getTreeStyles(), matchingStyle);
-    this.tree.setPresentationRenderer(searchRender);
     this.nodeConverter = nodeConverter != null ? nodeConverter : new NodeNameConverter();
-
+    this.nodeStorage = tree.getNodeStorage();
+    this.tree.setPresentationRenderer(searchRender);
     this.tree.addKeyPressHandler(
         event -> {
           event.stopPropagation();
           searchRequest.append(String.valueOf(event.getCharCode()));
           update();
         });
-
     this.tree.addKeyDownHandler(
         event -> {
           switch (event.getNativeKeyCode()) {
             case KEY_ENTER:
-              removeSearchPopUpFromTreeIfVisible();
+              removeSearchPopUpFromTreeIfIsShown();
               break;
             case KEY_BACKSPACE:
-              if (!Strings.isNullOrEmpty(searchRequest.toString())) {
+              if (!searchRequest.toString().isEmpty()) {
                 event.preventDefault();
                 searchRequest.setLength(searchRequest.length() - 1);
-                update();
+                doSearch();
               }
               break;
             case KEY_ESCAPE:
@@ -107,31 +110,61 @@ public class SpeedSearch {
               break;
           }
         });
-
-    this.tree.addExpandHandler(
+    this.expandNodeHandler =
         event -> {
-          if (filteredNodes == null) {
-            return;
-          }
           Node expandedNode = event.getNode();
-          List<Node> filteredChildren =
+          List<Node> expandedNodes =
               filteredNodes
                   .stream()
                   .filter(node -> node.getParent() != null && node.getParent().equals(expandedNode))
-                  .collect(Collectors.toList());
-          if (searchRequest.length() != 0
-              && tree.getNodeStorage().getChildren(expandedNode).size()
-                  != filteredChildren.size()) {
-            tree.getNodeStorage().replaceChildren(expandedNode, filteredChildren);
+                  .collect(toList());
+          if (nodeStorage.getChildren(expandedNode).size() != expandedNodes.size()) {
+            nodeStorage.replaceChildren(expandedNode, expandedNodes);
           }
-        });
-    this.searchRequest = new StringBuilder();
+        };
+    this.tree.addRedrawHandler(event -> setSelection());
+
     initSearchPopUp();
   }
 
+  private void setSelection() {
+    Optional<Node> startsOptional =
+        filteredNodes
+            .stream()
+            .filter(
+                node ->
+                    node.getName().toLowerCase().startsWith(searchRequest.toString().toLowerCase()))
+            .findFirst();
+    Optional<Node> containsOptional =
+        filteredNodes
+            .stream()
+            .filter(
+                node ->
+                    node.getName().toLowerCase().contains(searchRequest.toString().toLowerCase()))
+            .findFirst();
+    Optional<Node> matchesOptional =
+        filteredNodes
+            .stream()
+            .filter(node -> node.getName().toLowerCase().matches(getSearchPattern()))
+            .findFirst();
+
+    if (startsOptional.isPresent()) {
+      tree.getSelectionModel().select(startsOptional.get(), true);
+    } else if (containsOptional.isPresent()) {
+      tree.getSelectionModel().select(containsOptional.get(), true);
+    } else if (matchesOptional.isPresent()) {
+      tree.getSelectionModel().select(matchesOptional.get(), true);
+    } else {
+      filteredNodes
+          .stream()
+          .findFirst()
+          .ifPresent(node -> tree.getSelectionModel().select(node, true));
+    }
+  }
+
   private void initSearchPopUp() {
-    this.searchPopUp = new SearchPopUp();
-    Style style = this.searchPopUp.getElement().getStyle();
+    searchPopUp = new SearchPopUp();
+    Style style = searchPopUp.getElement().getStyle();
 
     style.setBackgroundColor(theme.backgroundColor());
     style.setBorderStyle(SOLID);
@@ -150,7 +183,7 @@ public class SpeedSearch {
     }
   }
 
-  private void removeSearchPopUpFromTreeIfVisible() {
+  private void removeSearchPopUpFromTreeIfIsShown() {
     searchRequest.setLength(0);
     Element popUp = Document.get().getElementById(ID);
     if (popUp != null) {
@@ -158,7 +191,7 @@ public class SpeedSearch {
     }
   }
 
-  protected void update() {
+  private void update() {
     if (searchTask == null) {
       searchTask =
           new DelayedTask() {
@@ -171,8 +204,8 @@ public class SpeedSearch {
     searchTask.delay(SEARCH_DELAY_MS);
   }
 
-  protected void reset() {
-    removeSearchPopUpFromTreeIfVisible();
+  void resetState() {
+    removeSearchPopUpFromTreeIfIsShown();
     searchRequest.setLength(0);
     savedNodes = null;
     searchRender.setRequestPattern("");
@@ -180,8 +213,13 @@ public class SpeedSearch {
   }
 
   private void doSearch() {
-    if (Strings.isNullOrEmpty(searchRequest.toString())) {
-      removeSearchPopUpFromTreeIfVisible();
+    if (expandHandlerRegistration == null) {
+      expandHandlerRegistration = tree.addExpandHandler(expandNodeHandler);
+    }
+    if (searchRequest.toString().isEmpty()) {
+      removeSearchPopUpFromTreeIfIsShown();
+      expandHandlerRegistration.removeHandler();
+      expandHandlerRegistration = null;
     } else {
       addSearchPopUpToTreeIfNotDisplayed();
       searchPopUp.setSearchRequest(searchRequest.toString());
@@ -191,7 +229,7 @@ public class SpeedSearch {
     tree.getSelectionModel().deselectAll();
     savedNodes = savedNodes == null ? getVisibleNodes() : savedNodes;
     List<Node> filteredChildNodes =
-        savedNodes.stream().filter(matchesToSearchRequest()::apply).collect(Collectors.toList());
+        savedNodes.stream().filter(matchesToSearchRequest()::apply).collect(toList());
     filteredNodes =
         savedNodes
             .stream()
@@ -202,10 +240,9 @@ public class SpeedSearch {
                             .stream()
                             .anyMatch(
                                 filteredNode -> existsInParentsOfNode(filteredNode, savedNode)))
-            .collect(Collectors.toList());
-    NodeStorage nodeStorage = tree.getNodeStorage();
+            .collect(toList());
 
-    if (filterElements) {
+    if (filterNodes) {
       for (Node savedNode : savedNodes) {
         if (!filteredNodes.contains(savedNode)) {
           if (getVisibleNodes().contains(savedNode)) {
@@ -215,10 +252,11 @@ public class SpeedSearch {
           Node parent = savedNode.getParent();
           if (parent == null) {
             nodeStorage.add(savedNode);
-            nodeStorage.replaceChildren(savedNode, getFilteredChildren(savedNode));
           } else if (getVisibleNodes().contains(parent)) {
             List<Node> filteredChildren = getFilteredChildren(parent);
-            nodeStorage.replaceChildren(parent, filteredChildren);
+            if (nodeStorage.getChildren(parent).size() != filteredChildren.size()) {
+              nodeStorage.replaceChildren(parent, filteredChildren);
+            }
           }
         }
       }
@@ -226,30 +264,8 @@ public class SpeedSearch {
     }
     getVisibleNodes().forEach(tree::refresh);
 
-    Optional<Node> startsOptional =
-        filteredNodes
-            .stream()
-            .filter(
-                node ->
-                    node.getName().toLowerCase().startsWith(searchRequest.toString().toLowerCase()))
-            .findFirst();
-    Optional<Node> containsOptional =
-        filteredNodes
-            .stream()
-            .filter(
-                node ->
-                    node.getName().toLowerCase().contains(searchRequest.toString().toLowerCase()))
-            .findFirst();
-
-    if (startsOptional.isPresent()) {
-      tree.getSelectionModel().select(startsOptional.get(), true);
-    } else if (containsOptional.isPresent()) {
-      tree.getSelectionModel().select(containsOptional.get(), true);
-    } else {
-      filteredNodes
-          .stream()
-          .findFirst()
-          .ifPresent(node -> tree.getSelectionModel().select(node, true));
+    if (tree.getSelectionModel().getSelectedNodes().isEmpty()) {
+      setSelection();
     }
   }
 
@@ -257,7 +273,7 @@ public class SpeedSearch {
     return filteredNodes
         .stream()
         .filter(node -> node.getParent() != null && node.getParent().equals(parent))
-        .collect(Collectors.toList());
+        .collect(toList());
   }
 
   private boolean existsInParentsOfNode(Node node, Node parent) {
