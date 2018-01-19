@@ -145,6 +145,12 @@ final class FileStructureImpl extends Window implements FileStructure {
     tree.resetSpeedSearchState();
   }
 
+  @Override
+  public void onClose() {
+    tree.closeSpeedSearchPopup();
+    this.hide();
+  }
+
   /** {@inheritDoc} */
   @Override
   public void hide() {

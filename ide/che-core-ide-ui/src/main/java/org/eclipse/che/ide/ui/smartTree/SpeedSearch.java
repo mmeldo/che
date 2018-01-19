@@ -18,6 +18,7 @@ import com.google.gwt.event.shared.HandlerRegistration;
 import com.google.gwt.user.client.ui.HorizontalPanel;
 import com.google.gwt.user.client.ui.Label;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
@@ -27,6 +28,7 @@ import org.eclipse.che.ide.ui.smartTree.converter.NodeConverter;
 import org.eclipse.che.ide.ui.smartTree.converter.impl.NodeNameConverter;
 import org.eclipse.che.ide.ui.smartTree.data.Node;
 import org.eclipse.che.ide.ui.smartTree.event.ExpandNodeEvent.ExpandNodeHandler;
+import org.eclipse.che.ide.ui.smartTree.event.RedrawNodeEvent;
 
 import static com.google.gwt.dom.client.Style.BorderStyle.SOLID;
 import static com.google.gwt.dom.client.Style.Position.FIXED;
@@ -41,7 +43,7 @@ import static org.eclipse.che.ide.api.theme.Style.theme;
  * @author Vlad Zhukovskiy
  * @author Igor Vinokur
  */
-public class SpeedSearch {
+class SpeedSearch {
 
   private static final String ID = "speedSearch";
   private static final int SEARCH_DELAY_MS = 100;
@@ -59,6 +61,8 @@ public class SpeedSearch {
   private SearchPopUp searchPopUp;
   private List<Node> savedNodes;
   private List<Node> filteredNodes;
+
+  private boolean update;
 
   /**
    * Searches and highlights matchings in the given tree by pattern generated from entered search
@@ -122,7 +126,20 @@ public class SpeedSearch {
             nodeStorage.replaceChildren(expandedNode, expandedNodes);
           }
         };
-    this.tree.addRedrawHandler(event -> setSelection());
+    this.tree.addRedrawHandler(
+        (RedrawNodeEvent event) -> {
+          if (update) {
+            List<Node> children = nodeStorage.getChildren(event.getNode());
+            if (children.stream().allMatch(Node::isLeaf)) {
+              savedNodes = new ArrayList<>();
+              savedNodes.addAll(getVisibleNodes());
+              savedNodes.addAll(children);
+              update = false;
+              doSearch();
+            }
+          }
+          setSelection();
+        });
 
     initSearchPopUp();
   }
@@ -205,9 +222,16 @@ public class SpeedSearch {
   }
 
   void resetState() {
+    update = true;
+    savedNodes = null;
+    if (expandHandlerRegistration != null) {
+      expandHandlerRegistration.removeHandler();
+    }
+  }
+
+  void closePopUp() {
     removeSearchPopUpFromTreeIfIsShown();
     searchRequest.setLength(0);
-    savedNodes = null;
     searchRender.setRequestPattern("");
     searchRender.setSearchRequest("");
   }
@@ -227,7 +251,6 @@ public class SpeedSearch {
     searchRender.setSearchRequest(searchRequest.toString());
     searchRender.setRequestPattern(getSearchPattern());
     tree.getSelectionModel().deselectAll();
-    savedNodes = savedNodes == null ? getVisibleNodes() : savedNodes;
     List<Node> filteredChildNodes =
         savedNodes.stream().filter(matchesToSearchRequest()::apply).collect(toList());
     filteredNodes =
@@ -238,8 +261,7 @@ public class SpeedSearch {
                     matchesToSearchRequest().apply(savedNode)
                         || filteredChildNodes
                             .stream()
-                            .anyMatch(
-                                filteredNode -> existsInParentsOfNode(filteredNode, savedNode)))
+                            .anyMatch(filteredNode -> nestedNodeOf(filteredNode, savedNode)))
             .collect(toList());
 
     if (filterNodes) {
@@ -276,7 +298,7 @@ public class SpeedSearch {
         .collect(toList());
   }
 
-  private boolean existsInParentsOfNode(Node node, Node parent) {
+  private boolean nestedNodeOf(Node node, Node parent) {
     while (node != null) {
       node = node.getParent();
       if (parent.equals(node)) {

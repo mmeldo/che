@@ -999,6 +999,10 @@ public class Tree extends FocusWidget
     speedSearch.resetState();
   }
 
+  public void closeSpeedSearchPopup() {
+    speedSearch.closePopUp();
+  }
+
   /** {@inheritDoc} */
   @Override
   protected void onAttach() {
