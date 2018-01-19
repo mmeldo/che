@@ -226,6 +226,7 @@ class SpeedSearch {
     savedNodes = null;
     if (expandHandlerRegistration != null) {
       expandHandlerRegistration.removeHandler();
+      expandHandlerRegistration = null;
     }
   }
 
